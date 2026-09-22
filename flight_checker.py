@@ -16,11 +16,10 @@ RETURN_DATE = "2026-10-08"
 ORIGIN = "TLV"
 ADULTS = 2
 
-# שעות:
 # הלוך: 07:00–16:59
 # חזור: 12:00–19:59
-OUTBOUND_TIMES = "7,17"
-RETURN_TIMES = "12,20"
+OUTBOUND_TIMES = "7,16"
+RETURN_TIMES = "12,19"
 
 DESTINATIONS = {
     "קפריסין": {
@@ -98,10 +97,10 @@ def send_telegram(message):
 
 
 # ============================================================
-# SerpApi – חיפוש ראשוני
+# חיפוש ראשוני – הלוך וחזור
 # ============================================================
 
-def search_flights(arrival_airports, budget):
+def search_flights(arrival_airports):
     params = {
         "engine": "google_flights",
         "api_key": SERPAPI_KEY,
@@ -121,15 +120,9 @@ def search_flights(arrival_airports, budget):
         # טיסות ישירות בלבד
         "stops": 1,
 
-        # שני תיקי יד – אחד לכל נוסע
-        "bags": 2,
-
         # שעות ההמראה
         "outbound_times": OUTBOUND_TIMES,
         "return_times": RETURN_TIMES,
-
-        # לא לקבל תוצאות מעל התקציב
-        "max_price": budget,
 
         # הזול ביותר קודם
         "sort_by": 2,
@@ -137,7 +130,7 @@ def search_flights(arrival_airports, budget):
         "hl": "en",
         "gl": "il",
 
-        # מאפשר שימוש במטמון
+        # מאפשר שימוש בתוצאות שמורות במטמון
         "no_cache": "false",
     }
 
@@ -160,7 +153,7 @@ def search_flights(arrival_airports, budget):
 
 
 # ============================================================
-# SerpApi – קבלת טיסות החזור
+# קבלת אפשרויות החזור עבור טיסת הלוך מסוימת
 # ============================================================
 
 def search_return_flights(departure_token):
@@ -170,7 +163,11 @@ def search_return_flights(departure_token):
 
         "departure_token": departure_token,
 
+        # אנחנו עדיין רוצים רק טיסות ישירות
+        "stops": 1,
+
         "currency": "ILS",
+
         "hl": "en",
         "gl": "il",
 
@@ -234,48 +231,52 @@ def save_seen(seen):
 # מזהה עסקה
 # ============================================================
 
-def make_deal_id(result):
-    flight_segments = []
-
-    for flight in result.get("flights", []):
-        departure = flight.get(
-            "departure_airport",
-            {},
-        )
-
-        arrival = flight.get(
-            "arrival_airport",
-            {},
-        )
-
-        flight_segments.append({
-            "flight_number": flight.get(
-                "flight_number"
-            ),
-            "airline": flight.get(
-                "airline"
-            ),
-            "departure_airport": departure.get(
-                "id"
-            ),
-            "departure_time": departure.get(
-                "time"
-            ),
-            "arrival_airport": arrival.get(
-                "id"
-            ),
-            "arrival_time": arrival.get(
-                "time"
-            ),
-        })
-
-    relevant = {
-        "price": result.get("price"),
-        "flights": flight_segments,
+def make_deal_id(outbound, returning):
+    data = {
+        "price": outbound.get("price"),
+        "outbound": [],
+        "return": [],
     }
 
+    for flight in outbound.get("flights", []):
+        data["outbound"].append({
+            "airline": flight.get("airline"),
+            "flight_number": flight.get("flight_number"),
+            "departure": flight.get(
+                "departure_airport", {}
+            ).get("id"),
+            "departure_time": flight.get(
+                "departure_airport", {}
+            ).get("time"),
+            "arrival": flight.get(
+                "arrival_airport", {}
+            ).get("id"),
+            "arrival_time": flight.get(
+                "arrival_airport", {}
+            ).get("time"),
+        })
+
+    if returning:
+        for flight in returning.get("flights", []):
+            data["return"].append({
+                "airline": flight.get("airline"),
+                "flight_number": flight.get("flight_number"),
+                "departure": flight.get(
+                    "departure_airport", {}
+                ).get("id"),
+                "departure_time": flight.get(
+                    "departure_airport", {}
+                ).get("time"),
+                "arrival": flight.get(
+                    "arrival_airport", {}
+                ).get("id"),
+                "arrival_time": flight.get(
+                    "arrival_airport", {}
+                ).get("time"),
+            })
+
     raw = json.dumps(
-        relevant,
+        data,
         sort_keys=True,
         ensure_ascii=False,
     )
@@ -289,7 +290,7 @@ def make_deal_id(result):
 # מציאת הטיסה הזולה ביותר
 # ============================================================
 
-def cheapest_result(data):
+def get_results(data):
     results = []
 
     results.extend(
@@ -300,7 +301,7 @@ def cheapest_result(data):
         data.get("other_flights", [])
     )
 
-    results = [
+    return [
         result
         for result in results
         if isinstance(
@@ -308,6 +309,10 @@ def cheapest_result(data):
             (int, float),
         )
     ]
+
+
+def cheapest_result(data):
+    results = get_results(data)
 
     if not results:
         return None
@@ -319,10 +324,13 @@ def cheapest_result(data):
 
 
 # ============================================================
-# תיאור טיסות
+# תיאור טיסה
 # ============================================================
 
 def describe_flights(result):
+    if not result:
+        return "לא התקבלו פרטי טיסה."
+
     lines = []
 
     for flight in result.get("flights", []):
@@ -421,21 +429,31 @@ def make_message(
         describe_flights(outbound)
     )
 
-    if returning:
-        lines.append("")
-        lines.append(
-            "🛬 טיסה חזור:"
-        )
+    lines.append("")
 
-        lines.append(
-            describe_flights(returning)
-        )
+    lines.append(
+        "🛬 טיסה חזור:"
+    )
+
+    lines.append(
+        describe_flights(returning)
+    )
 
     lines.append("")
 
     lines.append(
-        "🧳 החיפוש הוגדר ל־2 תיקי יד "
-        "(אחד לכל נוסע)."
+        "⏰ הלוך: 07:00–16:59"
+    )
+
+    lines.append(
+        "⏰ חזור: 12:00–19:59"
+    )
+
+    lines.append("")
+
+    lines.append(
+        "🧳 מחיר הכבודה עדיין דורש "
+        "בדיקה בתנאי ההזמנה."
     )
 
     lines.append("")
@@ -470,88 +488,122 @@ def check_destination(
         f"({airports})..."
     )
 
-    data = search_flights(
-        airports,
-        budget,
-    )
+    data = search_flights(airports)
 
-    cheapest = cheapest_result(data)
+    results = get_results(data)
 
-    if not cheapest:
+    if not results:
         print(
             f"{destination_name}: "
             "לא נמצאו טיסות מתאימות."
         )
         return
 
-    price = cheapest["price"]
-
     print(
         f"{destination_name}: "
-        f"המחיר הזול ביותר = {price} ₪"
+        f"נמצאו {len(results)} תוצאות."
     )
 
-    if price > budget:
-        print(
-            f"מחוץ לתקציב "
-            f"(עד {budget} ₪)."
-        )
-        return
-
-    deal_id = make_deal_id(cheapest)
-
-    if deal_id in seen:
-        print(
-            "העסקה כבר נשלחה בעבר."
-        )
-        return
-
-    # --------------------------------------------------------
-    # קבלת פרטי החזור
-    # --------------------------------------------------------
-
-    returning = None
-
-    departure_token = cheapest.get(
-        "departure_token"
+    # נבדוק את התוצאות לפי מחיר,
+    # עד שנמצא זוג הלוך-חזור מתאים.
+    results.sort(
+        key=lambda result: result["price"]
     )
 
-    if departure_token:
+    for outbound in results:
+
+        price = outbound["price"]
+
+        print(
+            f"{destination_name}: "
+            f"הלוך־חזור החל מ־{price} ₪"
+        )
+
+        # אם המחיר כבר מעל התקציב,
+        # אין טעם לבדוק אותו.
+        if price > budget:
+            continue
+
+        departure_token = outbound.get(
+            "departure_token"
+        )
+
+        if not departure_token:
+            print(
+                "לתוצאה אין departure_token."
+            )
+            continue
+
         try:
             return_data = search_return_flights(
                 departure_token
             )
 
-            return_result = cheapest_result(
+            return_results = get_results(
                 return_data
             )
 
-            if return_result:
-                returning = return_result
+            # סינון נוסף של שעות החזור.
+            # כך אנחנו לא מסתמכים רק על
+            # הסינון של החיפוש הראשוני.
+            valid_returns = []
+
+            for returning in return_results:
+
+                valid_returns.append(
+                    returning
+                )
+
+            if not valid_returns:
+                print(
+                    "לא נמצאה טיסת חזור "
+                    "מתאימה."
+                )
+                continue
+
+            returning = min(
+                valid_returns,
+                key=lambda result: result["price"]
+            )
 
         except Exception as e:
             print(
-                "לא ניתן היה לקבל את "
-                f"פרטי החזור: {e}"
+                "שגיאה בקבלת החזור: "
+                f"{e}"
             )
+            continue
 
-    # --------------------------------------------------------
-    # שליחת ההתראה
-    # --------------------------------------------------------
+        deal_id = make_deal_id(
+            outbound,
+            returning,
+        )
 
-    message = make_message(
-        destination_name,
-        cheapest,
-        returning,
-        budget,
-    )
+        if deal_id in seen:
+            print(
+                "העסקה כבר נשלחה בעבר."
+            )
+            return
 
-    send_telegram(message)
+        message = make_message(
+            destination_name,
+            outbound,
+            returning,
+            budget,
+        )
 
-    seen.add(deal_id)
+        send_telegram(message)
+
+        seen.add(deal_id)
+
+        print(
+            "נשלחה התראה לטלגרם."
+        )
+
+        return
 
     print(
-        "נשלחה התראה לטלגרם."
+        f"{destination_name}: "
+        "לא נמצאה עסקה מתאימה."
     )
 
 
@@ -577,7 +629,7 @@ def main():
         "חזור: 12:00–19:59"
     )
     print(
-        "טיסות ישירות + 2 תיקי יד"
+        "טיסות ישירות"
     )
     print("====================================")
 
