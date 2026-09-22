@@ -18,4 +18,7 @@ jobs:
           python-version: '3.10'
 
       - name: Run flight checker
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python flight_checker.py
