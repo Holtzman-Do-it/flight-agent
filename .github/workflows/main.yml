@@ -1,0 +1,21 @@
+name: Run Flight Agent
+
+on:
+  schedule:
+    - cron: '0 6,18 * * *'  # רץ כל יום ב-06:00 וב-18:00 שעון UTC
+  workflow_dispatch:        # מאפשר גם להריץ ידנית מתי שתרצה בלחיצת כפתור
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Run flight checker
+        run: python flight_checker.py
