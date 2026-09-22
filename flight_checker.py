@@ -1,7 +1,6 @@
 import os
 import json
 import hashlib
-from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import requests
@@ -15,77 +14,47 @@ DEPARTURE_DATE = "2026-10-04"
 RETURN_DATE = "2026-10-08"
 
 ORIGIN = "TLV"
-
-PASSENGERS = [
-    {"type": "adult"},
-    {"type": "adult"},
-]
+ADULTS = 2
 
 DESTINATIONS = {
     "קפריסין": {
-        "airports": ["LCA", "PFO"],
-        "budget_ils": Decimal("500"),
+        "airports": "LCA,PFO",
+        "budget_ils": 500,
     },
-
     "אתונה": {
-        "airports": ["ATH"],
-        "budget_ils": Decimal("1250"),
+        "airports": "ATH",
+        "budget_ils": 1250,
     },
-
     "רומא": {
-        "airports": ["FCO", "CIA"],
-        "budget_ils": Decimal("1250"),
+        "airports": "FCO,CIA",
+        "budget_ils": 1250,
     },
 }
 
-MAX_CONNECTIONS = 1
-
-MAX_OFFERS_TO_CHECK = 10
-
 
 # ============================================================
-# משתני סביבה
+# Secrets
 # ============================================================
 
-DUFFEL_ACCESS_TOKEN = os.environ.get(
-    "DUFFEL_ACCESS_TOKEN"
-)
+SERPAPI_KEY = os.environ.get("SERPAPI_KEY")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-TELEGRAM_BOT_TOKEN = os.environ.get(
-    "TELEGRAM_BOT_TOKEN"
-)
-
-TELEGRAM_CHAT_ID = os.environ.get(
-    "TELEGRAM_CHAT_ID"
-)
-
-
-# ============================================================
-# כתובות API
-# ============================================================
-
-DUFFEL_API = "https://api.duffel.com"
-
-ECB_API = "https://api.frankfurter.app"
-
-
-# ============================================================
-# קובץ זיכרון
-# ============================================================
 
 SEEN_FILE = Path("seen_deals.json")
 
+SERPAPI_URL = "https://serpapi.com/search"
+
 
 # ============================================================
-# בדיקת משתנים
+# בדיקת סביבה
 # ============================================================
 
 def check_environment():
-
     missing = []
 
-    if not DUFFEL_ACCESS_TOKEN:
-        missing.append("DUFFEL_ACCESS_TOKEN")
+    if not SERPAPI_KEY:
+        missing.append("SERPAPI_KEY")
 
     if not TELEGRAM_BOT_TOKEN:
         missing.append("TELEGRAM_BOT_TOKEN")
@@ -95,38 +64,9 @@ def check_environment():
 
     if missing:
         raise RuntimeError(
-            "חסרים Secrets: "
+            "חסרים GitHub Secrets: "
             + ", ".join(missing)
         )
-
-    # אסור לעבוד עם Test Token
-    if DUFFEL_ACCESS_TOKEN.startswith(
-        "duffel_test_"
-    ):
-        raise RuntimeError(
-            "הטוקן שהוגדר הוא Duffel TEST token. "
-            "נדרש Live Token כדי לקבל מחירי טיסות אמיתיים."
-        )
-
-
-# ============================================================
-# Headers של Duffel
-# ============================================================
-
-def duffel_headers():
-
-    return {
-        "Authorization":
-            f"Bearer {DUFFEL_ACCESS_TOKEN}",
-
-        "Accept": "application/json",
-
-        "Content-Type": "application/json",
-
-        "Accept-Encoding": "gzip",
-
-        "Duffel-Version": "v2",
-    }
 
 
 # ============================================================
@@ -134,9 +74,8 @@ def duffel_headers():
 # ============================================================
 
 def send_telegram(message):
-
     url = (
-        "https://api.telegram.org/"
+        f"https://api.telegram.org/"
         f"bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     )
 
@@ -154,578 +93,120 @@ def send_telegram(message):
 
 
 # ============================================================
-# חיפוש טיסות
+# SerpApi – חיפוש ראשוני
 # ============================================================
 
-def search_flights(destination):
+def search_flights(arrival_airports):
+    params = {
+        "engine": "google_flights",
+        "api_key": SERPAPI_KEY,
 
-    payload = {
-        "data": {
+        "departure_id": ORIGIN,
+        "arrival_id": arrival_airports,
 
-            "slices": [
+        "outbound_date": DEPARTURE_DATE,
+        "return_date": RETURN_DATE,
 
-                {
-                    "origin": ORIGIN,
-                    "destination": destination,
-                    "departure_date": DEPARTURE_DATE,
-                },
+        "type": 1,               # Round trip
+        "travel_class": 1,       # Economy
+        "adults": ADULTS,
 
-                {
-                    "origin": destination,
-                    "destination": ORIGIN,
-                    "departure_date": RETURN_DATE,
-                },
+        "currency": "ILS",
 
-            ],
+        # טיסות ישירות בלבד
+        "stops": 1,
 
-            "passengers": PASSENGERS,
+        # שני תיקי יד – אחד לכל נוסע
+        "bags": 2,
 
-            "cabin_class": "economy",
+        # הזול ביותר קודם
+        "sort_by": 2,
 
-            "max_connections": MAX_CONNECTIONS,
-        }
+        "hl": "en",
+        "gl": "il",
+
+        # מאפשר שימוש במטמון של SerpApi
+        "no_cache": "false",
     }
 
-    response = requests.post(
-        f"{DUFFEL_API}/air/offer_requests",
-
-        headers=duffel_headers(),
-
-        params={
-            "return_offers": "true",
-            "supplier_timeout": "20000",
-        },
-
-        json=payload,
-
-        timeout=60,
-    )
-
-    if not response.ok:
-
-        raise RuntimeError(
-            f"Duffel error "
-            f"{response.status_code}: "
-            f"{response.text[:1000]}"
-        )
-
-    result = response.json()
-
-    data = result.get(
-        "data",
-        {}
-    )
-
-    if data.get("live_mode") is False:
-
-        raise RuntimeError(
-            "Duffel החזיר תוצאות TEST ולא LIVE."
-        )
-
-    return data.get(
-        "offers",
-        []
-    )
-
-
-# ============================================================
-# קבלת Offer מעודכן
-# ============================================================
-
-def get_offer(offer_id):
-
     response = requests.get(
-
-        f"{DUFFEL_API}/air/offers/{offer_id}",
-
-        headers=duffel_headers(),
-
-        params={
-            "return_available_services": "true",
-        },
-
-        timeout=45,
+        SERPAPI_URL,
+        params=params,
+        timeout=90,
     )
 
-    if not response.ok:
-
-        raise RuntimeError(
-            f"Offer error "
-            f"{response.status_code}: "
-            f"{response.text[:1000]}"
-        )
-
-    return response.json().get(
-        "data",
-        {}
-    )
-
-
-# ============================================================
-# המרת מטבע
-# ============================================================
-
-def get_exchange_rate(currency):
-
-    currency = currency.upper()
-
-    if currency == "ILS":
-        return Decimal("1")
-
-    response = requests.get(
-
-        f"{ECB_API}/latest",
-
-        params={
-            "from": currency,
-            "to": "ILS",
-        },
-
-        timeout=20,
-    )
-
-    if not response.ok:
-
-        raise RuntimeError(
-            f"שגיאה בקבלת שער "
-            f"{currency}/ILS"
-        )
+    response.raise_for_status()
 
     data = response.json()
 
-    rate = data.get(
-        "rates",
-        {}
-    ).get("ILS")
-
-    if rate is None:
-
+    if data.get("error"):
         raise RuntimeError(
-            f"לא נמצא שער "
-            f"{currency}/ILS"
+            "SerpApi: " + str(data["error"])
         )
 
-    return Decimal(
-        str(rate)
-    )
-
-
-def to_ils(amount, currency):
-
-    try:
-
-        amount = Decimal(
-            str(amount)
-        )
-
-    except InvalidOperation:
-
-        raise RuntimeError(
-            f"מחיר לא תקין: {amount}"
-        )
-
-    return (
-        amount *
-        get_exchange_rate(currency)
-    )
+    return data
 
 
 # ============================================================
-# כבודה הכלולה
+# SerpApi – קבלת טיסות החזור
 # ============================================================
 
-def get_included_baggage(offer):
-
-    result = []
-
-    for slice_data in offer.get(
-        "slices",
-        []
-    ):
-
-        for segment in slice_data.get(
-            "segments",
-            []
-        ):
-
-            for passenger in segment.get(
-                "passengers",
-                []
-            ):
-
-                for baggage in passenger.get(
-                    "baggages",
-                    []
-                ):
-
-                    result.append(
-                        baggage
-                    )
-
-    return result
-
-
-def describe_included_baggage(offer):
-
-    baggages = get_included_baggage(
-        offer
-    )
-
-    if not baggages:
-
-        return (
-            "לא התקבל מידע על כבודה כלולה"
-        )
-
-    descriptions = []
-
-    for baggage in baggages:
-
-        parts = []
-
-        quantity = baggage.get(
-            "quantity"
-        )
-
-        baggage_type = baggage.get(
-            "type"
-        )
-
-        weight = baggage.get(
-            "weight"
-        )
-
-        weight_unit = baggage.get(
-            "weight_unit"
-        )
-
-        if quantity is not None:
-
-            parts.append(
-                f"כמות {quantity}"
-            )
-
-        if baggage_type:
-
-            parts.append(
-                f"סוג: {baggage_type}"
-            )
-
-        if weight is not None:
-
-            parts.append(
-                f"{weight} "
-                f"{weight_unit or ''}"
-            )
-
-        if parts:
-
-            descriptions.append(
-                " / ".join(parts)
-            )
-
-    if not descriptions:
-
-        return (
-            "קיימת כבודה כלולה "
-            "(פרטים לא מלאים)"
-        )
-
-    return "; ".join(
-        descriptions
-    )
-
-
-# ============================================================
-# שירותי כבודה שניתן לרכוש
-# ============================================================
-
-def get_baggage_services(offer):
-
-    services = offer.get(
-        "available_services",
-        []
-    )
-
-    return [
-        service
-        for service in services
-        if service.get("type")
-        == "baggage"
-    ]
-
-
-def cheapest_baggage_service_ils(offer):
-
-    services = get_baggage_services(
-        offer
-    )
-
-    if not services:
-
-        return None
-
-    prices = []
-
-    for service in services:
-
-        amount = service.get(
-            "total_amount"
-        )
-
-        currency = service.get(
-            "total_currency"
-        )
-
-        if amount is None:
-            continue
-
-        if not currency:
-            continue
-
-        try:
-
-            price_ils = to_ils(
-                amount,
-                currency
-            )
-
-            prices.append(
-                (
-                    price_ils,
-                    service
-                )
-            )
-
-        except Exception as e:
-
-            print(
-                f"לא ניתן להמיר מחיר כבודה: {e}"
-            )
-
-    if not prices:
-
-        return None
-
-    prices.sort(
-        key=lambda x: x[0]
-    )
-
-    return prices[0]
-
-
-# ============================================================
-# פרטי הטיסה
-# ============================================================
-
-def get_flight_details(offer):
-
-    details = []
-
-    for slice_data in offer.get(
-        "slices",
-        []
-    ):
-
-        segments = slice_data.get(
-            "segments",
-            []
-        )
-
-        if not segments:
-            continue
-
-        first = segments[0]
-
-        last = segments[-1]
-
-        origin = slice_data.get(
-            "origin",
-            {}
-        ).get(
-            "iata_code",
-            ""
-        )
-
-        destination = slice_data.get(
-            "destination",
-            {}
-        ).get(
-            "iata_code",
-            ""
-        )
-
-        segment_details = []
-
-        for segment in segments:
-
-            operating_carrier = segment.get(
-                "operating_carrier",
-                {}
-            )
-
-            segment_details.append(
-                {
-                    "airline": operating_carrier.get(
-                        "iata_code",
-                        ""
-                    ),
-
-                    "airline_name":
-                        operating_carrier.get(
-                            "name",
-                            ""
-                        ),
-
-                    "flight_number":
-                        segment.get(
-                            "operating_carrier_flight_number",
-                            ""
-                        ),
-
-                    "departure":
-                        segment.get(
-                            "departing_at",
-                            ""
-                        ),
-
-                    "arrival":
-                        segment.get(
-                            "arriving_at",
-                            ""
-                        ),
-
-                    "origin":
-                        segment.get(
-                            "origin",
-                            {}
-                        ).get(
-                            "iata_code",
-                            ""
-                        ),
-
-                    "destination":
-                        segment.get(
-                            "destination",
-                            {}
-                        ).get(
-                            "iata_code",
-                            ""
-                        ),
-                }
-            )
-
-        details.append(
-            {
-                "origin": origin,
-
-                "destination": destination,
-
-                "departure":
-                    first.get(
-                        "departing_at",
-                        ""
-                    ),
-
-                "arrival":
-                    last.get(
-                        "arriving_at",
-                        ""
-                    ),
-
-                "segments":
-                    len(segments),
-
-                "segment_details":
-                    segment_details,
-            }
-        )
-
-    return details
-
-
-# ============================================================
-# זיהוי עסקה
-#
-# חשוב:
-# לא משתמשים ב-offer.id.
-#
-# אותו מסלול + אותן טיסות + אותו מחיר
-# = אותה עסקה.
-#
-# מחיר חדש = עסקה חדשה.
-# ============================================================
-
-def make_deal_id(offer):
-
-    flights = get_flight_details(
-        offer
-    )
-
-    relevant = {
-
-        "total_amount":
-            offer.get(
-                "total_amount"
-            ),
-
-        "total_currency":
-            offer.get(
-                "total_currency"
-            ),
-
-        "slices": flights,
+def search_return_flights(departure_token):
+    params = {
+        "engine": "google_flights",
+        "api_key": SERPAPI_KEY,
+        "departure_token": departure_token,
+        "currency": "ILS",
+        "hl": "en",
+        "gl": "il",
+        "no_cache": "false",
     }
 
-    raw = json.dumps(
-
-        relevant,
-
-        sort_keys=True,
-
-        ensure_ascii=False,
+    response = requests.get(
+        SERPAPI_URL,
+        params=params,
+        timeout=90,
     )
 
-    return hashlib.sha256(
-        raw.encode("utf-8")
-    ).hexdigest()
+    response.raise_for_status()
+
+    data = response.json()
+
+    if data.get("error"):
+        raise RuntimeError(
+            "SerpApi return search: "
+            + str(data["error"])
+        )
+
+    return data
 
 
 # ============================================================
-# זיכרון
+# זיכרון עסקאות שכבר נשלחו
 # ============================================================
 
 def load_seen():
-
     if not SEEN_FILE.exists():
-
         return set()
 
     try:
-
         with open(
             SEEN_FILE,
             "r",
-            encoding="utf-8"
+            encoding="utf-8",
         ) as f:
-
-            return set(
-                json.load(f)
-            )
+            return set(json.load(f))
 
     except Exception:
-
         return set()
 
 
 def save_seen(seen):
-
     with open(
         SEEN_FILE,
         "w",
-        encoding="utf-8"
+        encoding="utf-8",
     ) as f:
-
         json.dump(
             sorted(seen),
             f,
@@ -735,44 +216,159 @@ def save_seen(seen):
 
 
 # ============================================================
-# הודעת Telegram
+# מזהה עסקה
+# ============================================================
+
+def make_deal_id(result):
+    flight_segments = []
+
+    for flight in result.get("flights", []):
+        departure = flight.get(
+            "departure_airport",
+            {},
+        )
+
+        arrival = flight.get(
+            "arrival_airport",
+            {},
+        )
+
+        flight_segments.append({
+            "flight_number": flight.get(
+                "flight_number"
+            ),
+            "airline": flight.get(
+                "airline"
+            ),
+            "departure_airport": departure.get(
+                "id"
+            ),
+            "departure_time": departure.get(
+                "time"
+            ),
+            "arrival_airport": arrival.get(
+                "id"
+            ),
+            "arrival_time": arrival.get(
+                "time"
+            ),
+        })
+
+    relevant = {
+        "price": result.get("price"),
+        "flights": flight_segments,
+    }
+
+    raw = json.dumps(
+        relevant,
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+
+    return hashlib.sha256(
+        raw.encode("utf-8")
+    ).hexdigest()
+
+
+# ============================================================
+# תיאור טיסה
+# ============================================================
+
+def describe_flights(result):
+    lines = []
+
+    for flight in result.get("flights", []):
+        departure = flight.get(
+            "departure_airport",
+            {},
+        )
+
+        arrival = flight.get(
+            "arrival_airport",
+            {},
+        )
+
+        airline = flight.get(
+            "airline",
+            ""
+        )
+
+        flight_number = flight.get(
+            "flight_number",
+            ""
+        )
+
+        lines.append(
+            f"{airline} {flight_number}".strip()
+        )
+
+        lines.append(
+            f"{departure.get('id', '')} "
+            f"→ {arrival.get('id', '')}"
+        )
+
+        lines.append(
+            f"המראה: {departure.get('time', '')}"
+        )
+
+        lines.append(
+            f"נחיתה: {arrival.get('time', '')}"
+        )
+
+        lines.append("")
+
+    return "\n".join(lines).strip()
+
+
+# ============================================================
+# בחירת הטיסה הזולה ביותר
+# ============================================================
+
+def cheapest_result(data):
+    results = []
+
+    results.extend(
+        data.get("best_flights", [])
+    )
+
+    results.extend(
+        data.get("other_flights", [])
+    )
+
+    results = [
+        result
+        for result in results
+        if isinstance(
+            result.get("price"),
+            (int, float),
+        )
+    ]
+
+    if not results:
+        return None
+
+    return min(
+        results,
+        key=lambda result: result["price"],
+    )
+
+
+# ============================================================
+# יצירת הודעת Telegram
 # ============================================================
 
 def make_message(
     destination_name,
-    airport,
-    offer,
-    flight_price_ils,
-    baggage_service,
+    outbound,
+    returning,
     budget,
 ):
-
-    flights = get_flight_details(
-        offer
-    )
-
-    airlines = []
-
-    for flight in flights:
-
-        for segment in flight[
-            "segment_details"
-        ]:
-
-            name = segment[
-                "airline_name"
-            ]
-
-            if name and name not in airlines:
-
-                airlines.append(
-                    name
-                )
+    price = outbound.get("price")
 
     lines = []
 
     lines.append(
-        "✈️ נמצאה טיסה בתקציב"
+        "✈️ נמצאה טיסה ישירה בתקציב!"
     )
 
     lines.append("")
@@ -782,114 +378,61 @@ def make_message(
     )
 
     lines.append(
-        f"שדה תעופה: {airport}"
-    )
-
-    if airlines:
-
-        lines.append(
-            "חברה: "
-            + ", ".join(airlines)
-        )
-
-    lines.append("")
-
-    lines.append(
-        f"מחיר הטיסה: "
-        f"{flight_price_ils:.0f} ₪"
+        f"תאריכים: "
+        f"{DEPARTURE_DATE} → {RETURN_DATE}"
     )
 
     lines.append(
-        f"תקציב: {budget:.0f} ₪"
+        f"נוסעים: {ADULTS} מבוגרים"
     )
 
     lines.append("")
 
     lines.append(
-        "כבודה הכלולה בתעריף:"
+        f"💰 מחיר הלוך־חזור: {price} ₪"
     )
 
     lines.append(
-        describe_included_baggage(
-            offer
-        )
+        f"🎯 התקציב: {budget} ₪"
     )
 
-    if baggage_service:
+    lines.append("")
 
-        baggage_price = (
-            baggage_service[0]
-        )
+    lines.append(
+        "🛫 טיסה הלוך:"
+    )
 
+    lines.append(
+        describe_flights(outbound)
+    )
+
+    if returning:
         lines.append("")
-
         lines.append(
-            "כבודה נוספת הזמינה לרכישה:"
+            "🛬 טיסה חזור:"
         )
 
         lines.append(
-            f"{baggage_price:.0f} ₪"
+            describe_flights(returning)
         )
-
-    lines.append("")
-
-    for index, flight in enumerate(
-        flights
-    ):
-
-        if index == 0:
-
-            lines.append(
-                f"הלוך — {DEPARTURE_DATE}"
-            )
-
-        else:
-
-            lines.append(
-                f"חזור — {RETURN_DATE}"
-            )
-
-        lines.append(
-            f"{flight['origin']} → "
-            f"{flight['destination']}"
-        )
-
-        for segment in flight[
-            "segment_details"
-        ]:
-
-            flight_number = segment[
-                "flight_number"
-            ]
-
-            airline = segment[
-                "airline"
-            ]
-
-            lines.append(
-                f"{airline} "
-                f"{flight_number}"
-            )
-
-            lines.append(
-                f"המראה: "
-                f"{segment['departure']}"
-            )
-
-            lines.append(
-                f"נחיתה: "
-                f"{segment['arrival']}"
-            )
 
     lines.append("")
 
     lines.append(
-        "⚠️ המחיר התקבל מ-Duffel "
-        "בזמן הבדיקה."
+        "🧳 החיפוש הוגדר ל־2 תיקי יד "
+        "(אחד לכל נוסע)."
+    )
+
+    lines.append("")
+
+    lines.append(
+        "המחיר התקבל מ-Google Flights "
+        "באמצעות SerpApi."
     )
 
     lines.append(
-        "יש לאמת את המחיר שוב לפני הזמנה."
+        "יש לבדוק את המחיר הסופי ותנאי "
+        "הכבודה לפני ההזמנה."
     )
 
     return "\n".join(lines)
@@ -904,209 +447,112 @@ def check_destination(
     destination_data,
     seen,
 ):
+    airports = destination_data["airports"]
+    budget = destination_data["budget_ils"]
 
-    budget = destination_data[
-        "budget_ils"
-    ]
+    print(
+        f"\nמחפש {destination_name} "
+        f"({airports})..."
+    )
 
-    for airport in destination_data[
-        "airports"
-    ]:
+    data = search_flights(airports)
 
+    cheapest = cheapest_result(data)
+
+    if not cheapest:
         print(
-            f"\nמחפש "
-            f"{destination_name} "
-            f"({airport})..."
+            f"{destination_name}: "
+            "לא נמצאו תוצאות."
         )
+        return
 
-        offers = search_flights(
-            airport
-        )
+    price = cheapest["price"]
 
+    print(
+        f"{destination_name}: "
+        f"המחיר הזול ביותר = {price} ₪"
+    )
+
+    if price > budget:
         print(
-            f"נמצאו {len(offers)} הצעות"
+            f"מחוץ לתקציב "
+            f"(עד {budget} ₪)."
         )
+        return
 
-        offers = sorted(
+    deal_id = make_deal_id(cheapest)
 
-            offers,
-
-            key=lambda offer:
-                Decimal(
-                    str(
-                        offer.get(
-                            "total_amount",
-                            "999999999"
-                        )
-                    )
-                )
+    if deal_id in seen:
+        print(
+            "העסקה כבר נשלחה בעבר."
         )
+        return
 
-        checked = 0
+    # --------------------------------------------------------
+    # רק עכשיו, כאשר נמצאה עסקה מעניינת,
+    # מבקשים את פרטי החזור.
+    # --------------------------------------------------------
 
-        for offer in offers:
+    returning = None
 
-            if checked >= MAX_OFFERS_TO_CHECK:
+    departure_token = cheapest.get(
+        "departure_token"
+    )
 
-                break
-
-            offer_id = offer.get(
-                "id"
+    if departure_token:
+        try:
+            return_data = search_return_flights(
+                departure_token
             )
 
-            if not offer_id:
-
-                continue
-
-            checked += 1
-
-            try:
-
-                current_offer = get_offer(
-                    offer_id
-                )
-
-            except Exception as e:
-
-                print(
-                    f"שגיאה בקבלת offer: {e}"
-                )
-
-                continue
-
-            if current_offer.get(
-                "live_mode"
-            ) is False:
-
-                print(
-                    "ה-offer אינו Live."
-                )
-
-                continue
-
-            amount = current_offer.get(
-                "total_amount"
+            return_result = cheapest_result(
+                return_data
             )
 
-            currency = current_offer.get(
-                "total_currency"
-            )
+            if return_result:
+                returning = return_result
 
-            if amount is None:
-                continue
-
-            if not currency:
-                continue
-
-            try:
-
-                flight_price_ils = to_ils(
-                    amount,
-                    currency
-                )
-
-            except Exception as e:
-
-                print(
-                    f"שגיאת המרת מטבע: {e}"
-                )
-
-                continue
-
+        except Exception as e:
             print(
-                f"{airport}: "
-                f"{flight_price_ils:.0f} ₪"
+                "לא ניתן היה לקבל את "
+                f"פרטי החזור: {e}"
             )
 
-            if flight_price_ils > budget:
+    message = make_message(
+        destination_name,
+        cheapest,
+        returning,
+        budget,
+    )
 
-                continue
+    send_telegram(message)
 
-            baggage_service = None
+    seen.add(deal_id)
 
-            try:
-
-                baggage_service = (
-                    cheapest_baggage_service_ils(
-                        current_offer
-                    )
-                )
-
-            except Exception as e:
-
-                print(
-                    f"שגיאה בבדיקת כבודה: {e}"
-                )
-
-            deal_id = make_deal_id(
-                current_offer
-            )
-
-            if deal_id in seen:
-
-                continue
-
-            message = make_message(
-
-                destination_name,
-
-                airport,
-
-                current_offer,
-
-                flight_price_ils,
-
-                baggage_service,
-
-                budget,
-            )
-
-            send_telegram(
-                message
-            )
-
-            seen.add(
-                deal_id
-            )
-
-            print(
-                "נשלחה התראה לטלגרם."
-            )
+    print(
+        "נשלחה התראה לטלגרם."
+    )
 
 
 # ============================================================
-# MAIN
+# הפעלה ראשית
 # ============================================================
 
 def main():
-
     check_environment()
 
+    print("====================================")
+    print("Flight Agent – Google Flights")
     print(
-        "======================================"
+        f"{DEPARTURE_DATE} → {RETURN_DATE}"
     )
-
     print(
-        "Flight Agent מתחיל"
+        f"{ADULTS} מבוגרים"
     )
-
     print(
-        f"תאריכים: "
-        f"{DEPARTURE_DATE} → "
-        f"{RETURN_DATE}"
+        "טיסות ישירות + 2 תיקי יד"
     )
-
-    print(
-        "נוסעים: 2 מבוגרים"
-    )
-
-    print(
-        f"יציאה: {ORIGIN}"
-    )
-
-    print(
-        "======================================"
-    )
+    print("====================================")
 
     seen = load_seen()
 
@@ -1114,11 +560,10 @@ def main():
 
     for (
         destination_name,
-        destination_data
+        destination_data,
     ) in DESTINATIONS.items():
 
         try:
-
             check_destination(
                 destination_name,
                 destination_data,
@@ -1126,31 +571,30 @@ def main():
             )
 
         except Exception as e:
-
-            message = (
-                f"שגיאה ביעד "
-                f"{destination_name}: "
-                f"{e}"
+            error = (
+                f"{destination_name}: {e}"
             )
 
-            print(message)
-
-            errors.append(
-                message
+            print(
+                "שגיאה: " + error
             )
 
-    save_seen(
-        seen
-    )
+            errors.append(error)
+
+    save_seen(seen)
 
     if errors:
+        try:
+            send_telegram(
+                "⚠️ Flight Agent נתקל בשגיאות:\n\n"
+                + "\n".join(errors)
+            )
 
-        send_telegram(
-
-            "⚠️ Flight Agent הסתיים "
-            "עם שגיאות:\n\n"
-            + "\n".join(errors)
-        )
+        except Exception as e:
+            print(
+                "לא ניתן לשלוח הודעת שגיאה: "
+                f"{e}"
+            )
 
     print(
         "\nFlight Agent הסתיים."
@@ -1158,5 +602,4 @@ def main():
 
 
 if __name__ == "__main__":
-
     main()
