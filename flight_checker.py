@@ -16,6 +16,12 @@ RETURN_DATE = "2026-10-08"
 ORIGIN = "TLV"
 ADULTS = 2
 
+# שעות:
+# הלוך: 07:00–16:59
+# חזור: 12:00–19:59
+OUTBOUND_TIMES = "7,17"
+RETURN_TIMES = "12,20"
+
 DESTINATIONS = {
     "קפריסין": {
         "airports": "LCA,PFO",
@@ -39,7 +45,6 @@ DESTINATIONS = {
 SERPAPI_KEY = os.environ.get("SERPAPI_KEY")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-
 
 SEEN_FILE = Path("seen_deals.json")
 
@@ -96,7 +101,7 @@ def send_telegram(message):
 # SerpApi – חיפוש ראשוני
 # ============================================================
 
-def search_flights(arrival_airports):
+def search_flights(arrival_airports, budget):
     params = {
         "engine": "google_flights",
         "api_key": SERPAPI_KEY,
@@ -107,8 +112,8 @@ def search_flights(arrival_airports):
         "outbound_date": DEPARTURE_DATE,
         "return_date": RETURN_DATE,
 
-        "type": 1,               # Round trip
-        "travel_class": 1,       # Economy
+        "type": 1,
+        "travel_class": 1,
         "adults": ADULTS,
 
         "currency": "ILS",
@@ -119,13 +124,20 @@ def search_flights(arrival_airports):
         # שני תיקי יד – אחד לכל נוסע
         "bags": 2,
 
+        # שעות ההמראה
+        "outbound_times": OUTBOUND_TIMES,
+        "return_times": RETURN_TIMES,
+
+        # לא לקבל תוצאות מעל התקציב
+        "max_price": budget,
+
         # הזול ביותר קודם
         "sort_by": 2,
 
         "hl": "en",
         "gl": "il",
 
-        # מאפשר שימוש במטמון של SerpApi
+        # מאפשר שימוש במטמון
         "no_cache": "false",
     }
 
@@ -155,10 +167,13 @@ def search_return_flights(departure_token):
     params = {
         "engine": "google_flights",
         "api_key": SERPAPI_KEY,
+
         "departure_token": departure_token,
+
         "currency": "ILS",
         "hl": "en",
         "gl": "il",
+
         "no_cache": "false",
     }
 
@@ -271,7 +286,40 @@ def make_deal_id(result):
 
 
 # ============================================================
-# תיאור טיסה
+# מציאת הטיסה הזולה ביותר
+# ============================================================
+
+def cheapest_result(data):
+    results = []
+
+    results.extend(
+        data.get("best_flights", [])
+    )
+
+    results.extend(
+        data.get("other_flights", [])
+    )
+
+    results = [
+        result
+        for result in results
+        if isinstance(
+            result.get("price"),
+            (int, float),
+        )
+    ]
+
+    if not results:
+        return None
+
+    return min(
+        results,
+        key=lambda result: result["price"],
+    )
+
+
+# ============================================================
+# תיאור טיסות
 # ============================================================
 
 def describe_flights(result):
@@ -321,40 +369,7 @@ def describe_flights(result):
 
 
 # ============================================================
-# בחירת הטיסה הזולה ביותר
-# ============================================================
-
-def cheapest_result(data):
-    results = []
-
-    results.extend(
-        data.get("best_flights", [])
-    )
-
-    results.extend(
-        data.get("other_flights", [])
-    )
-
-    results = [
-        result
-        for result in results
-        if isinstance(
-            result.get("price"),
-            (int, float),
-        )
-    ]
-
-    if not results:
-        return None
-
-    return min(
-        results,
-        key=lambda result: result["price"],
-    )
-
-
-# ============================================================
-# יצירת הודעת Telegram
+# הודעת Telegram
 # ============================================================
 
 def make_message(
@@ -455,14 +470,17 @@ def check_destination(
         f"({airports})..."
     )
 
-    data = search_flights(airports)
+    data = search_flights(
+        airports,
+        budget,
+    )
 
     cheapest = cheapest_result(data)
 
     if not cheapest:
         print(
             f"{destination_name}: "
-            "לא נמצאו תוצאות."
+            "לא נמצאו טיסות מתאימות."
         )
         return
 
@@ -489,8 +507,7 @@ def check_destination(
         return
 
     # --------------------------------------------------------
-    # רק עכשיו, כאשר נמצאה עסקה מעניינת,
-    # מבקשים את פרטי החזור.
+    # קבלת פרטי החזור
     # --------------------------------------------------------
 
     returning = None
@@ -517,6 +534,10 @@ def check_destination(
                 "לא ניתן היה לקבל את "
                 f"פרטי החזור: {e}"
             )
+
+    # --------------------------------------------------------
+    # שליחת ההתראה
+    # --------------------------------------------------------
 
     message = make_message(
         destination_name,
@@ -548,6 +569,12 @@ def main():
     )
     print(
         f"{ADULTS} מבוגרים"
+    )
+    print(
+        "הלוך: 07:00–16:59"
+    )
+    print(
+        "חזור: 12:00–19:59"
     )
     print(
         "טיסות ישירות + 2 תיקי יד"
